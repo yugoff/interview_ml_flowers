@@ -3,3 +3,7 @@ torchvision
 timm
 faiss-cpu
 matplotlib
+uvicorn
+fastapi
+timm
+python-multypart
