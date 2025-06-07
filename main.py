@@ -18,12 +18,12 @@ transform = torchvision.transforms.Compose([
     torchvision.transforms.Normalize(mean, std)
 ])
 
-resnet_model = torchvision.models.resnet50(pretrained=True)
+resnet_model = torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.DEFAULT)
 resnet_model.fc = torch.nn.Identity()
 resnet_model = resnet_model.to(device)
 resnet_model.eval()
 
-efficientnet_model = torchvision.models.efficientnet_b0(pretrained=True)
+efficientnet_model = torchvision.models.efficientnet_b0(weights=torchvision.models.EfficientNet_B0_Weights.DEFAULT)
 efficientnet_model.classifier = torch.nn.Identity()
 efficientnet_model = efficientnet_model.to(device)
 efficientnet_model.eval()
