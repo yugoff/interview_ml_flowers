@@ -1,75 +1,52 @@
-import torch
-import torchvision
+import os
+
+import fastapi
+import contextlib
+import uvicorn
 import numpy
 import faiss
-import uvicorn
-import fastapi
-import PIL
-import io
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+from models import process_and_save, resnet_model, efficientnet_model, transform
+from api.routes import router
 
-mean = [0.485, 0.456, 0.406]
-std = [0.229, 0.224, 0.225]
 
-transform = torchvision.transforms.Compose([
-    torchvision.transforms.Resize((224, 224)),
-    torchvision.transforms.ToTensor(),
-    torchvision.transforms.Normalize(mean, std)
-])
+@contextlib.asynccontextmanager
+async def lifespan(app: fastapi.FastAPI):
+    image_dir = "./flowers/train"
+    image_paths = [
+        os.path.join(image_dir, f) for f in os.listdir(image_dir)
+        if os.path.isfile(os.path.join(image_dir, f)) and f.lower().endswith((".jpg", ".jpeg", ".png"))
+    ]
+    os.makedirs("./data", exist_ok=True)
 
-resnet_model = torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.DEFAULT)
-resnet_model.fc = torch.nn.Identity()
-resnet_model = resnet_model.to(device)
-resnet_model.eval()
+    if not os.path.exists("./data/resnet_embs.npy"):
+        print("ResNet эмбеддинги не найдены — создаём...")
+        process_and_save(resnet_model, "resnet", image_paths)
+    else:
+        print("ResNet эмбеддинги уже существуют")
 
-efficientnet_model = torchvision.models.efficientnet_b0(weights=torchvision.models.EfficientNet_B0_Weights.DEFAULT)
-efficientnet_model.classifier = torch.nn.Identity()
-efficientnet_model = efficientnet_model.to(device)
-efficientnet_model.eval()
+    if not os.path.exists("./data/efficientnet_embs.npy"):
+        print("EfficientNet эмбеддинги не найдены — создаём...")
+        process_and_save(efficientnet_model, "efficientnet", image_paths)
+    else:
+        print("EfficientNet эмбеддинги уже существуют")
 
-resnet_embeddings = numpy.load("./data/resnet_embs.npy")
-resnet_image_paths = numpy.load("./data/resnet_paths.npy")
-resnet_index = faiss.read_index("./data/resnet.index")
+    app.state.resnet_model = resnet_model
+    app.state.efficientnet_model = efficientnet_model
+    app.state.transform = transform
 
-efficientnet_embeddings = numpy.load("./data/efficientnet_embs.npy")
-efficientnet_image_paths = numpy.load("./data/efficient_path.npy")
-efficientnet_index = faiss.read_index("./data/efficientnet.index")
+    app.state.resnet_embeddings = numpy.load("./data/resnet_embs.npy")
+    app.state.resnet_image_paths = numpy.load("./data/resnet_paths.npy")
+    app.state.resnet_index = faiss.read_index("./data/resnet.index")
 
-def extract_features(model, transform, image: PIL.Image.Image) -> numpy.ndarray:
-    tensor = transform(image).unsqueeze(0).to(device)
-    with torch.no_grad():
-        features = model(tensor)
-        embedding = features.squeeze().detach().cpu().numpy().astype("float32")
-        return embedding
+    app.state.efficientnet_embeddings = numpy.load("./data/efficientnet_embs.npy")
+    app.state.efficientnet_image_paths = numpy.load("./data/efficientnet_paths.npy")
+    app.state.efficientnet_index = faiss.read_index("./data/efficientnet.index")
 
-def get_top5(image: PIL.Image.Image):
-    resnet_embedding = extract_features(resnet_model, transform, image)
-    efficientnet_embedding = extract_features(efficientnet_model, transform, image)
-    resnet_distances, resnet_indices = resnet_index.search(numpy.expand_dims(resnet_embedding, axis=0), 5)
-    efficientnet_distances, efficientnet_indices = efficientnet_index.search(numpy.expand_dims(efficientnet_embedding, axis=0), 5)
-    resnet_results = {
-        str(resnet_image_paths[i]): float(resnet_distances[0][j])
-        for j, i in enumerate(resnet_indices[0])
-    }
-    efficientnet_results = {
-        str(efficientnet_image_paths[i]): float(efficientnet_distances[0][j])
-        for j, i in enumerate(efficientnet_indices[0])
-    }
-    return resnet_results, efficientnet_results
+    yield
 
-app = fastapi.FastAPI()
-
-@app.post("/search")
-async def search(file: fastapi.UploadFile = fastapi.File(...)):
-    contents = await file.read()
-    try:
-        image = PIL.Image.open(io.BytesIO(contents)).convert("RGB")
-    except Exception:
-        return fastapi.responses.JSONResponse(status_code=400, content={"error": "Invalid image format"})
-
-    results = get_top5(image)
-    return {"results": results}
+app = fastapi.FastAPI(lifespan=lifespan)
+app.include_router(router)
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000)
